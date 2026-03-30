@@ -1,15 +1,14 @@
 import numpy as np
 import torch
+from PIL import Image
 
 
 def _tensor_to_np_gray(tensor: torch.Tensor) -> np.ndarray:
     """ComfyUI IMAGE tensor [B,H,W,C] → 2D grayscale float32 [H,W] 0-1."""
-    # 첫 번째 배치만 사용
     img = tensor[0].cpu().numpy()          # [H,W,C]
     if img.shape[2] == 1:
         gray = img[:, :, 0]
     else:
-        # 가중 평균으로 grayscale 변환
         gray = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     return gray.astype(np.float32)
 
@@ -21,8 +20,53 @@ def _np_gray_to_tensor(arr: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(rgb).unsqueeze(0)  # [1,H,W,3]
 
 
+def _resize_to(arr: np.ndarray, h: int, w: int) -> np.ndarray:
+    pil = Image.fromarray((arr * 255).clip(0, 255).astype(np.uint8))
+    pil = pil.resize((w, h), Image.LANCZOS)
+    return np.array(pil, dtype=np.float32) / 255.0
+
+
+def freq_stripe_conv(natural: np.ndarray, stripe: np.ndarray) -> np.ndarray:
+    """
+    주파수 도메인 처리:
+      F_n = FFT(natural)          — 자연 이미지 스펙트럼
+      F_s = FFT(stripe)           — 줄무늬 스펙트럼 (줄무늬 주파수 피크 포함)
+      F_result = F_n * F_s        — 주파수 도메인 곱 (공간 도메인 원형 컨볼루션과 동치)
+      result   = Re(IFFT(F_result)) → 정규화
+
+    컨볼루션 정리: IFFT(F_n ⊛ F_s) = natural × stripe  (스케일 인수 포함)
+    즉, 스펙트럼 콘볼루션의 역푸리에 변환 = 공간 도메인 픽셀 곱.
+    여기서는 FFT 도메인에서 직접 연산 후 IFFT하여 기하학적 합성을 생성한다.
+    """
+    H, W = natural.shape
+
+    if natural.shape != stripe.shape:
+        stripe = _resize_to(stripe, H, W)
+
+    # 1. 주파수 도메인으로 변환
+    F_n = np.fft.fft2(natural)   # 자연 이미지 복소 스펙트럼
+    F_s = np.fft.fft2(stripe)    # 줄무늬 복소 스펙트럼 (고주파 피크)
+
+    # 2. 스펙트럼 곱 (= 공간 도메인 원형 컨볼루션에 해당)
+    #    컨볼루션 정리: IFFT(F_n ⊛ F_s) = n × s
+    #    → 스펙트럼 원형 콘볼루션을 주파수 도메인 곱으로 효율적으로 계산
+    F_result = F_n * F_s
+
+    # 3. 역 푸리에 변환 (공간 도메인으로 복원), 실수부 추출
+    result = np.real(np.fft.ifft2(F_result))
+
+    # 4. 출력 정규화 [0, 1] — 스펙트럼 연산 후 필수
+    r_min, r_max = result.min(), result.max()
+    if r_max > r_min:
+        result = (result - r_min) / (r_max - r_min)
+    else:
+        result = np.zeros_like(result)
+
+    return result.astype(np.float32)
+
+
 class StripeBlendNode:
-    """자연 이미지 × 줄무늬 이미지 → 기하학적 합성 이미지"""
+    """자연 이미지 스펙트럼과 줄무늬 피크의 주파수 도메인 컨볼루션 → 역푸리에 변환"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -39,18 +83,9 @@ class StripeBlendNode:
     CATEGORY = "image/postprocessing"
 
     def blend(self, natural_image: torch.Tensor, stripe_image: torch.Tensor):
-        natural = _tensor_to_np_gray(natural_image)   # [H,W]
-        stripe  = _tensor_to_np_gray(stripe_image)    # [H,W]
-
-        # 크기가 다르면 stripe를 natural 크기에 맞춤
-        if natural.shape != stripe.shape:
-            from PIL import Image
-            h, w = natural.shape
-            stripe_pil = Image.fromarray((stripe * 255).clip(0, 255).astype(np.uint8))
-            stripe_pil = stripe_pil.resize((w, h), Image.LANCZOS)
-            stripe = np.array(stripe_pil, dtype=np.float32) / 255.0
-
-        result = (natural * stripe).astype(np.float32)
+        natural = _tensor_to_np_gray(natural_image)
+        stripe  = _tensor_to_np_gray(stripe_image)
+        result  = freq_stripe_conv(natural, stripe)
         return (_np_gray_to_tensor(result),)
 
 
@@ -59,5 +94,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "StripeBlend": "Stripe Blend (Natural × Stripe)",
+    "StripeBlend": "Stripe Blend (Freq Conv)",
 }
