@@ -49,8 +49,10 @@ def freq_stripe_conv(natural: np.ndarray, stripe: np.ndarray) -> np.ndarray:
 
     # 2. 주파수 도메인에서 두 스펙트럼을 공간 신호처럼 취급하여 직접 2D 컨볼루션
     #    F_n ⊛ F_s : F_result[u,v] = Σ_{k,l} F_n[k,l] * F_s[u-k, v-l]
-    from scipy.signal import convolve
-    F_result = convolve(F_n, F_s, mode='same')
+    # F_n, F_s 스펙트럼 배열 자체를 공간 신호처럼 직접 2D 원형 컨볼루션
+    # conv2d(F_n, F_s)[u,v] = Σ_{k,l} F_n[k,l] · F_s[u-k, v-l]
+    # numpy FFT를 이용한 효율적 원형 컨볼루션 (scipy 없음)
+    F_result = np.fft.ifft2(np.fft.fft2(F_n) * np.fft.fft2(F_s))
 
     # 3. 역 푸리에 변환 (공간 도메인으로 복원), 실수부 추출
     result = np.real(np.fft.ifft2(F_result))
