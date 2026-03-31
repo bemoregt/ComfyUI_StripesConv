@@ -47,10 +47,10 @@ def freq_stripe_conv(natural: np.ndarray, stripe: np.ndarray) -> np.ndarray:
     F_n = np.fft.fft2(natural)   # 자연 이미지 복소 스펙트럼
     F_s = np.fft.fft2(stripe)    # 줄무늬 복소 스펙트럼 (고주파 피크)
 
-    # 2. 주파수 도메인에서 두 스펙트럼의 원형 콘볼루션
-    #    F_n ⊛ F_s = IFFT(FFT(F_n) * FFT(F_s))
-    #    → 컨볼루션 정리를 한 번 더 적용: 스펙트럼 공간에서 곱 → IFFT = 스펙트럼 콘볼루션
-    F_result = np.fft.ifft2(np.fft.fft2(F_n) * np.fft.fft2(F_s))
+    # 2. 주파수 도메인에서 두 스펙트럼을 공간 신호처럼 취급하여 직접 2D 컨볼루션
+    #    F_n ⊛ F_s : F_result[u,v] = Σ_{k,l} F_n[k,l] * F_s[u-k, v-l]
+    from scipy.signal import fftconvolve
+    F_result = fftconvolve(F_n, F_s, mode='same')
 
     # 3. 역 푸리에 변환 (공간 도메인으로 복원), 실수부 추출
     result = np.real(np.fft.ifft2(F_result))
